@@ -330,7 +330,9 @@ ALLOWED_CAPS = {
 def has_proper_name(text: str) -> bool:
     """FR/EN : deux mots capitalisés consécutifs (hors liste autorisée) = probable nom de personne.
     (L'arabe n'a pas de majuscules : la protection y est structurelle, le modèle ne voit aucun nom.)"""
-    for sent in re.split(r"(?<=[.!?…:;])\s+|\n", plain_text(text)):
+    # Les messages entre guillemets sont des exemples fictifs (déjà vérifiés par quotes_consistent) :
+    # « Mdr », « On verra »… ne doivent pas être pris pour des noms propres.
+    for sent in re.split(r"(?<=[.!?…:;])\s+|\n", _QUOTED.sub(" ", plain_text(text))):
         run = 0
         for w in re.findall(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’-]*", sent):
             capitalized = len(w) > 1 and w[0].isupper() and not re.match(r"^I['’]", w) and norm(w) not in ALLOWED_CAPS
@@ -357,22 +359,84 @@ def too_similar_title(titre: str, previous: list[str]) -> bool:
     return False
 
 
+# ── Cohérence langue / message ────────────────────────────────────────────────
+_FR_SW = {"le", "la", "les", "de", "des", "du", "un", "une", "et", "est", "que", "pour", "pas", "ce", "qui", "dans",
+          "tu", "te", "ton", "ta", "je", "il", "elle", "mais", "avec", "sur", "au", "en", "ne", "se", "ça", "ou"}
+_EN_SW = {"the", "and", "is", "to", "of", "you", "it", "that", "for", "in", "a", "can", "your", "are", "with", "this",
+          "be", "not", "on", "or", "if", "as", "they", "have", "but", "an", "so"}
+
+
+def lang_ok(lang: str, text: str) -> bool:
+    """Le modèle a déjà écrit une « lecture » en anglais dans un article arabe : on vérifie chaque champ."""
+    letters = re.findall(r"[^\W\d_]", text or "")
+    if not letters:
+        return False
+    ar = sum(1 for c in letters if "\u0600" <= c <= "\u06ff") / len(letters)
+    if lang == "ar":
+        return ar >= 0.6
+    if ar > 0.05:
+        return False
+    words = re.findall(r"[a-zà-ÿ]+", (text or "").lower())
+    if len(words) < 8:  # champ trop court pour trancher par mots-outils
+        return True
+    fr, en = sum(w in _FR_SW for w in words), sum(w in _EN_SW for w in words)
+    return fr > en if lang == "fr" else en > fr
+
+
+_QUOTED = re.compile(r"«([^»]+)»|“([^”]+)”|\"([^\"]+)\"")
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"[^\w]+", "", norm(s))
+
+
+def quotes_consistent(lang: str, ex: dict, art: dict) -> bool:
+    """Un titre « Tu me manques » au-dessus d'un encadré « Mdr » : incohérent.
+    (1) tout message cité dans titre/accroche/lecture doit être l'exemple choisi ;
+    (2) un AUTRE exemple (assez long pour être reconnaissable) ne doit pas apparaître dans ces champs."""
+    zone = " ".join([art["titre"], art["accroche"], art["lecture"]])
+    mine = _squash(ex["message"])
+    for m in _QUOTED.finditer(zone):
+        q = _squash(next(g for g in m.groups() if g))
+        if q and q != mine and len(q) <= 45 and any(q == _squash(o["message"]) for o in EXEMPLES[lang]):
+            return False
+    zn = _squash(zone)
+    for o in EXEMPLES[lang]:
+        om = _squash(o["message"])
+        if o["id"] != ex["id"] and len(om) >= 8 and om in zn and om not in mine:
+            return False
+    return True
+
+
 def _clean(v) -> str:
     return re.sub(r"\s+", " ", str(v)).strip()
 
 
+QUOTES = {"fr": ("« ", " »"), "en": ("“", "”"), "ar": ("« ", " »")}
+
+
+def _bench(lang: str, ex: dict) -> str:
+    lo, hi = ex["low"], ex["high"]
+    if lang == "fr":
+        return f'{UI["fr"]["bench"]} : {lo}–{hi} %'
+    if lang == "en":
+        return f'{UI["en"]["bench"]}: {lo}–{hi}%'
+    return f'{UI["ar"]["bench"]} <bdi dir="ltr">{lo}–{hi}%</bdi>'  # chiffres et % restent groupés en RTL
+
+
 def render_body(lang: str, art: dict, ex: dict) -> str:
     e, ui = html.escape, UI[lang]
+    qo, qc = QUOTES[lang]
     paras = "".join(f"<p>{e(p.strip())}</p>" for p in re.split(r"\n\s*\n", art["accroche"]) if p.strip())
     conseils = "".join(f"<li>{e(c)}</li>" for c in art["conseils"])
     return (
         f"{paras}\n"
         '<div class="miryx-box">\n'
         f'<div class="kicker">{ui["box"]}</div>\n'
-        f'<p class="msg" dir="auto">« {e(ex["message"])} »</p>\n'
-        f'<p class="score"><strong>{signal_label(lang, ex["low"], ex["high"])}</strong> · {ui["bench"]} : {ex["low"]}–{ex["high"]} %</p>\n'
+        f'<p class="msg" dir="auto">{qo}{e(ex["message"])}{qc}</p>\n'
+        f'<p class="score"><strong>{signal_label(lang, ex["low"], ex["high"])}</strong> · {_bench(lang, ex)}</p>\n'
         f'<p>{e(art["lecture"])}</p>\n'
-        f'<p class="alt"><strong>{ui["alt"]}</strong> « {e(art["reformulation"])} »</p>\n'
+        f'<p class="alt"><strong>{ui["alt"]}</strong> {qo}{e(art["reformulation"])}{qc}</p>\n'
         "</div>\n"
         f'<h2>{ui["h2"]}</h2>\n'
         f"<ol>{conseils}</ol>\n"
@@ -387,7 +451,7 @@ def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | No
         ex = next(x for x in EXEMPLES[lang] if x["id"] == eid and eid in allowed_ids)
         art = {k: _clean(data[k]) for k in ("titre", "meta_description", "lecture", "reformulation")}
         art["accroche"] = re.sub(r"[ \t]+", " ", str(data["accroche"])).strip()
-        conseils = [_clean(c) for c in data["conseils"]]
+        conseils = [_clean(c) for c in data["conseils"]][:3]  # 4-5 conseils : on garde les 3 premiers
     except Exception:
         print("[WARN] Réponse incomplète ou exemple_id invalide, article ignoré")
         return None
@@ -411,6 +475,14 @@ def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | No
         return None
     if len(blob.split()) < 120:
         print("[WARN] Article trop court, article ignoré")
+        return None
+    for label, txt in (("titre", art["titre"]), ("accroche", art["accroche"]), ("lecture", art["lecture"]),
+                       ("reformulation", art["reformulation"]), ("conseils", " ".join(conseils))):
+        if not lang_ok(lang, txt):
+            print(f"[WARN] « {label} » n'est pas écrit en {lang} (mélange de langues), article rejeté")
+            return None
+    if not quotes_consistent(lang, ex, art):
+        print("[WARN] Le titre/texte cite un autre message que l'exemple choisi (incohérence), article rejeté")
         return None
     if BANNED_RE[lang].search(norm(blob)):
         print("[WARN] Affirmation interdite (source citée, fausse étude, faux buzz...), article rejeté")
@@ -456,7 +528,8 @@ RETURN strict JSON with these fields (plain text, NO HTML tags):
 - "exemple_id": the number you chose.
 - "lecture": 2 plausible hypotheses about what this message can mean, worded as hypotheses ("it can mean…"), with no digit.
 - "reformulation": a clearer, more direct version of the message the person could send instead, same register.
-- "conseils": exactly 3 very concrete tips applicable to the next text, 1-2 sentences each. No generalities.
+- "conseils": exactly 3 very concrete tips about how to write, read or answer a TEXT MESSAGE (not about meeting in person, not body language), applicable to the next text, 1-2 sentences each. No generalities.
+CONSISTENCY: the article must be about the message you chose. If you quote a message in "titre", "accroche" or "lecture", quote EXACTLY the chosen one, never another. EVERY field, including "lecture" and "reformulation", must be written in the target language only.
 Impeccable spelling and grammar."""
     base = {"model": GROQ_MODEL, "temperature": 0.7, "max_tokens": 2500,
             # mêmes réglages que l'app (vibecheck_main.py) : sans eux, le raisonnement interne
@@ -558,7 +631,7 @@ def article_page(lang: str, art: dict, meta: dict, url: str) -> str:
 <a class="cta" href="{APP_URL}/d/{challenge}?src=blog-defi">{ui['cta_defi']}</a>
 <a class="cta alt" href="{APP_URL}/app?src=blog-app&amp;lang={lang}">{ui['cta_app']}</a>
 <a class="cta soft" href="{APP_URL}/texto-du-jour?src=blog-jeu&amp;lang={lang}">{ui['cta_game']}</a>
-<footer><a href="{APP_URL}/mentions-legales">{ui['legal']}</a> · <a href="{APP_URL}/confidentialite">{ui['priv']}</a></footer>
+<footer><a href="{APP_URL}/mentions-legales?lang={lang}">{ui['legal']}</a> · <a href="{APP_URL}/confidentialite?lang={lang}">{ui['priv']}</a></footer>
 </body>
 </html>"""
 
@@ -638,10 +711,37 @@ def publish(lang: str, art: dict) -> dict:
     return {**meta, "lang": lang, "slug": slug}
 
 
+def purge_requested() -> None:
+    """Supprime des articles listés dans `purge.txt` (une ligne = `fr/slug`, `en/slug` ou `ar/slug`).
+    La ligne `legacy` supprime les anciens articles de la v1 (articles/*.html à la racine du dossier).
+    Le fichier est retiré après usage : c'est le moyen de supprimer un article depuis le téléphone."""
+    if not os.path.exists("purge.txt"):
+        return
+    with open("purge.txt", encoding="utf-8") as f:
+        lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+    for line in lines:
+        targets = []
+        if line == "legacy" and os.path.isdir("articles"):
+            targets = [os.path.join("articles", fn) for fn in os.listdir("articles")
+                       if os.path.isfile(os.path.join("articles", fn)) and (fn.endswith(".html") or fn.endswith(".meta.json"))]
+        elif re.fullmatch(r"(fr|en|ar)/[A-Za-z0-9_-]+", line):
+            lang, slug = line.split("/")
+            targets = [f"articles/{lang}/{slug}.html", f"articles/{lang}/{slug}.meta.json"]
+        else:
+            print(f"[WARN] purge.txt : ligne ignorée (format invalide) : {line!r}")
+            continue
+        for t in targets:
+            if os.path.exists(t):
+                os.remove(t)
+                print(f"[PURGE] supprimé : {t}")
+    os.remove("purge.txt")
+
+
 def main() -> int:
     if not GROQ_API_KEY:
         print("[ERREUR] GROQ_API_KEY absent — ajoute-le dans Settings → Secrets → Actions de CE dépôt")
         return 1
+    purge_requested()
     any_source, created = False, 0
     for lang in LANGS:
         metas = read_metas()
@@ -674,15 +774,16 @@ def main() -> int:
             made += 1
             created += 1
             time.sleep(2)
-    if created:
-        metas = read_metas()
-        for lang in LANGS:
-            os.makedirs(os.path.dirname(index_path(lang)) or ".", exist_ok=True)
-            with open(index_path(lang), "w", encoding="utf-8") as f:
-                f.write(build_index(lang, metas))
-        with open("sitemap.xml", "w", encoding="utf-8") as f:
-            f.write(build_sitemap(metas))
-    else:
+    # Index et sitemap sont toujours reconstruits (idempotent) : après une suppression d'article,
+    # ils se remettent à jour tout seuls, sans commit inutile si rien n'a changé.
+    metas = read_metas()
+    for lang in LANGS:
+        os.makedirs(os.path.dirname(index_path(lang)) or ".", exist_ok=True)
+        with open(index_path(lang), "w", encoding="utf-8") as f:
+            f.write(build_index(lang, metas))
+    with open("sitemap.xml", "w", encoding="utf-8") as f:
+        f.write(build_sitemap(metas))
+    if not created:
         print("[INFO] Aucun nouvel article ce passage — pas une erreur (pas de thème d'actualité, cooldown, ou garde-fou).")
     if not os.path.exists("robots.txt"):
         with open("robots.txt", "w", encoding="utf-8") as f:
