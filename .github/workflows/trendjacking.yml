@@ -1,8 +1,7 @@
 name: Miryx Trend-Jacking
 
-# Toutes les 6h (pas 15 min — lecon de JAMILA : scanner plus vite que les
-# sources ne publient ne sert a rien, ca ne fait que consommer le quota
-# d'API pour rien). workflow_dispatch permet aussi un declenchement manuel.
+# Toutes les 6 h (lecon JAMILA : scanner plus vite que les sources ne publient
+# ne sert a rien). workflow_dispatch = declenchement manuel possible.
 on:
   schedule:
     - cron: "0 */6 * * *"
@@ -11,9 +10,15 @@ on:
 permissions:
   contents: write
 
+# Jamais deux runs en meme temps (evite les conflits de push)
+concurrency:
+  group: trendjacking
+  cancel-in-progress: false
+
 jobs:
   trendjack:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Recuperer le code
         uses: actions/checkout@v4
@@ -32,9 +37,15 @@ jobs:
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
         run: python3 scripts/trendjacking.py
 
-      - name: Publier les nouveaux articles (si generes)
+      - name: Publier les nouveaux fichiers (si generes)
         run: |
           git config user.name "miryx-trendjacking-bot"
           git config user.email "bot@miryxcheck.com"
           git add -A
-          git diff --cached --quiet && echo "Rien de nouveau a publier" || (git commit -m "Nouvel article automatique" && git push)
+          if git diff --cached --quiet; then
+            echo "Rien de nouveau a publier"
+          else
+            git commit -m "Nouvel article automatique"
+            git pull --rebase origin main
+            git push
+          fi
