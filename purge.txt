@@ -1,3 +1,0 @@
-# Reset EN et AR : articles publiés avant les correctifs v4.1/v4.2 (titre/encadré incohérents, lecture affichée en liste, typographie)
-en/*
-ar/*
