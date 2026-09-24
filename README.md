@@ -1,33 +1,44 @@
-# miryx-blog — Trend-Jacking automatisé
+# miryx-blog — Trend-Jacking FR / EN / AR (v4, 24/09/2026)
 
-Ce dépôt génère et publie automatiquement des articles sur `blog.miryxcheck.com`,
-à partir de sujets qui trendent (Google Trends FR + Reddit r/relationships,
-r/dating_advice), filtrés sur le thème relationnel/textos ambigus, écrits par
-Groq avec l'angle Miryx, puis indexés de force auprès de Google.
+Publie des articles sur `blog.miryxcheck.com` dans les 3 langues de Miryx. Google Trends + Google Actualités (éditions locales) servent **uniquement à détecter un thème** (ghosting, rupture, jalousie…). Le modèle ne voit jamais un titre d'actualité : aucun nom de personne ne peut entrer dans un article.
 
-## Avant le premier lancement — 2 secrets à ajouter
+## Arborescence exacte du dépôt (pas de dossier en double)
+```
+.github/workflows/trendjacking.yml
+scripts/trendjacking.py
+requirements.txt
+README.md
+CNAME                (blog.miryxcheck.com)
+articles/{fr,en,ar}/ (généré)
+index.html, en/index.html, ar/index.html, sitemap.xml, robots.txt   (générés)
+```
+`published.json` n'est plus utilisé : tu peux le supprimer. **Supprime aussi les 6 anciens articles** (`articles/*.html` et `articles/*.meta.json` à la racine de `articles/`, ils venaient de Reddit).
 
-Dans **Settings → Secrets and variables → Actions** de CE dépôt (`miryx-blog`,
-pas celui de l'app principale — les secrets ne se partagent jamais entre
-dépôts) :
+## Secrets (Settings → Secrets and variables → Actions **de ce dépôt**)
+- `GROQ_API_KEY` — obligatoire.
+- `GCP_SERVICE_ACCOUNT_JSON` — optionnel (Indexing API, best-effort).
+- `DAILY_CAP` — optionnel (défaut 3 articles/jour/langue).
 
-1. **`GROQ_API_KEY`** — la même clé Groq déjà utilisée sur miryxcheck.com.
-2. **`GCP_SERVICE_ACCOUNT_JSON`** — colle le **contenu complet** du fichier
-   JSON téléchargé pour le compte de service `miryx-indexing@miryx-trendjacking.iam.gserviceaccount.com`
-   (tout le fichier, tel quel, comme valeur du secret).
+## Format d'un article
+Accroche vécue → encadré « Lecture Miryx » (message fictif, signal, 2 hypothèses, version plus claire) → 3 réflexes → note « le score mesure l'intensité ». Le modèle ne renvoie que du texte ; la page est assemblée par le code.
+Le **score affiché vient de `EXEMPLES`** (fourchettes de la table de calibration de l'app), jamais du modèle. Si le prompt de l'app change, mettre `EXEMPLES` à jour.
+3 CTA : **Challenge sur ce message** (`/d/{id}?src=blog-defi`, défis créés dans la table `challenges`, `created_by='miryx-blog'`), analyse gratuite (`?src=blog-app`), Texto du Jour (`?src=blog-jeu`).
 
-## Vérifier que ça tourne
+## Premier lancement
+Actions → « Miryx Trend-Jacking » → **Run workflow**, puis lire les logs :
+- `[INFO] fr/en/ar: N actualités lues, thèmes détectés: …` → les sources répondent ;
+- `[OK] Article publié (xx)` → ça marche ;
+- « Aucun nouvel article » → normal (pas de thème d'actualité, cooldown, ou garde-fou) ;
+- **rouge** = aucune source joignable ou `GROQ_API_KEY` absent.
+Puis Search Console → Sitemaps → `https://blog.miryxcheck.com/sitemap.xml`.
 
-Une fois les 2 secrets ajoutés : onglet **Actions** de ce dépôt → workflow
-"Miryx Trend-Jacking" → bouton **Run workflow** pour le déclencher tout de
-suite sans attendre les 6h. Un vert = un article a peut-être été publié (ou
-"rien de nouveau" si aucun sujet ne matchait le filtre à ce moment précis —
-c'est normal, pas une erreur). Un rouge = ouvre le run pour voir le message
-exact, colle-le à Claude.
+## Mesurer le Challenge du blog
+```sql
+select lang, id, message, views, completions from challenges where created_by='miryx-blog' order by views desc;
+```
 
-## Ce que ça ne fait jamais (rappel des règles produit Miryx)
-
-- Jamais de vrai message privé d'un tiers dans un article, même en évoquant
-  une actualité people — uniquement le TYPE de situation.
-- Jamais plus de 2 articles par passage.
-- Jamais de republication d'un sujet déjà traité (suivi dans `published.json`).
+## Garde-fous (dans le code)
+- Le modèle ne voit aucune actualité ; sujets sensibles (santé grave, mort, violences, mineurs) écartés dans les 3 langues.
+- Aucun HTML du modèle publié ; tout est échappé. Rejet si le modèle écrit un pourcentage.
+- Rejet si source citée, fausse étude/« buzz », « chaque matin », titre trop proche d'un titre récent, nom propre (FR/EN).
+- Modèle `openai/gpt-oss-120b`, mêmes réglages que l'app.
