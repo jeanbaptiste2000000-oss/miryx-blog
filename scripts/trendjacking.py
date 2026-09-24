@@ -408,6 +408,23 @@ def quotes_consistent(lang: str, ex: dict, art: dict) -> bool:
     return True
 
 
+def _flat(v) -> str:
+    return " ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+
+
+def fix_quotes_en(s: str) -> str:
+    return re.sub(r"\s*»", "”", re.sub(r"«\s*", "“", s))
+
+
+def tidy(lang: str, s: str) -> str:
+    """Le modèle écrit « it can mean X; it can mean Y » : deux phrases propres, majuscules, point final."""
+    if lang == "ar" or not s:
+        return s
+    s = re.sub(r";\s+(\w)", lambda m: ". " + m.group(1).upper(), s)
+    s = s[:1].upper() + s[1:]
+    return s if s[-1] in ".!?…”»" else s + "."
+
+
 def _clean(v) -> str:
     return re.sub(r"\s+", " ", str(v)).strip()
 
@@ -449,9 +466,16 @@ def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | No
     try:
         eid = int(data["exemple_id"])
         ex = next(x for x in EXEMPLES[lang] if x["id"] == eid and eid in allowed_ids)
-        art = {k: _clean(data[k]) for k in ("titre", "meta_description", "lecture", "reformulation")}
-        art["accroche"] = re.sub(r"[ \t]+", " ", str(data["accroche"])).strip()
-        conseils = [_clean(c) for c in data["conseils"]][:3]  # 4-5 conseils : on garde les 3 premiers
+        art = {k: _clean(_flat(data[k])) for k in ("titre", "meta_description", "lecture", "reformulation")}
+        acc = data["accroche"]
+        art["accroche"] = re.sub(r"[ \t]+", " ", "\n\n".join(map(str, acc)) if isinstance(acc, (list, tuple)) else str(acc)).strip()
+        raw = data["conseils"]
+        raw = [l for l in re.split(r"\n+", raw) if l.strip()] if isinstance(raw, str) else raw
+        conseils = [_clean(_flat(c)) for c in raw][:3]  # 4-5 conseils : on garde les 3 premiers
+        if lang == "en":  # guillemets anglais partout (le modèle mélange « » et “ ”)
+            art = {k: fix_quotes_en(v) for k, v in art.items()}
+            conseils = [fix_quotes_en(c) for c in conseils]
+        art["lecture"] = tidy(lang, art["lecture"])
     except Exception:
         print("[WARN] Réponse incomplète ou exemple_id invalide, article ignoré")
         return None
@@ -522,9 +546,9 @@ PICK ONE example message (exemple_id) that best illustrates the theme:
 {menu}
 
 RETURN strict JSON with these fields (plain text, NO HTML tags):
-- "titre": 40-90 characters, tense and concrete, makes people want to click without lying. May quote the chosen message between « ». Forbidden: starting with "When"/"Quand"/"عندما", the phrase "decode ambiguous messages", any digit or percentage.
+- "titre": 40-90 characters, tense and concrete, makes people want to click without lying. May quote the chosen message between quotation marks («…» in French and Arabic, “…” in English). Forbidden: starting with "When"/"Quand"/"عندما", the phrase "decode ambiguous messages", any digit or percentage.
 - "meta_description": 130-158 characters with the reader's benefit.
-- "accroche": 3-5 sentences starting straight from a lived situation (the reader recognises themselves in 5 seconds). No "recently", no "we often see".
+- "accroche": 3-5 sentences starting straight from a lived situation (the reader recognises themselves in 5 seconds). No "recently", no "we often see", and never announce the article ("Let's explore…", "In this article…").
 - "exemple_id": the number you chose.
 - "lecture": 2 plausible hypotheses about what this message can mean, worded as hypotheses ("it can mean…"), with no digit.
 - "reformulation": a clearer, more direct version of the message the person could send instead, same register.
@@ -675,7 +699,7 @@ def build_sitemap(metas: list[dict]) -> str:
 ROBOTS = f"User-agent: *\nAllow: /\n\nSitemap: {BLOG_BASE_URL}/sitemap.xml\n"
 
 
-def request_indexing(url: str) -> None:
+def request_indexing(url: str, kind: str = "URL_UPDATED") -> None:
     """Best-effort. L'API d'indexation est officiellement prévue pour JobPosting / BroadcastEvent :
     ne pas compter dessus. Le sitemap.xml est le vrai mécanisme."""
     if not GCP_SA_JSON:
@@ -687,7 +711,7 @@ def request_indexing(url: str) -> None:
             json.loads(GCP_SA_JSON), scopes=["https://www.googleapis.com/auth/indexing"])
         resp = AuthorizedSession(creds).post(
             "https://indexing.googleapis.com/v3/urlNotifications:publish",
-            json={"url": url, "type": "URL_UPDATED"}, timeout=20)
+            json={"url": url, "type": kind}, timeout=20)
         print(f"[{'OK' if resp.status_code == 200 else 'WARN'}] Indexing API {resp.status_code} pour {url}")
     except Exception as e:
         print(f"[WARN] Indexation échouée (non bloquant): {e}")
@@ -712,7 +736,7 @@ def publish(lang: str, art: dict) -> dict:
 
 
 def purge_requested() -> None:
-    """Supprime des articles listés dans `purge.txt` (une ligne = `fr/slug`, `en/slug` ou `ar/slug`).
+    """Supprime des articles listés dans `purge.txt` (une ligne = `fr/slug`, `en/slug`, `ar/slug`, ou `en/*` pour toute une langue).
     La ligne `legacy` supprime les anciens articles de la v1 (articles/*.html à la racine du dossier).
     Le fichier est retiré après usage : c'est le moyen de supprimer un article depuis le téléphone."""
     if not os.path.exists("purge.txt"):
@@ -724,6 +748,9 @@ def purge_requested() -> None:
         if line == "legacy" and os.path.isdir("articles"):
             targets = [os.path.join("articles", fn) for fn in os.listdir("articles")
                        if os.path.isfile(os.path.join("articles", fn)) and (fn.endswith(".html") or fn.endswith(".meta.json"))]
+        elif re.fullmatch(r"(fr|en|ar)/\*", line):  # toute une langue : on repart de zéro dans cette langue
+            d = os.path.join("articles", line[:2])
+            targets = [os.path.join(d, fn) for fn in os.listdir(d)] if os.path.isdir(d) else []
         elif re.fullmatch(r"(fr|en|ar)/[A-Za-z0-9_-]+", line):
             lang, slug = line.split("/")
             targets = [f"articles/{lang}/{slug}.html", f"articles/{lang}/{slug}.meta.json"]
@@ -734,6 +761,8 @@ def purge_requested() -> None:
             if os.path.exists(t):
                 os.remove(t)
                 print(f"[PURGE] supprimé : {t}")
+                if t.endswith(".html"):
+                    request_indexing(f"{BLOG_BASE_URL}/{t.replace(os.sep, '/')}", "URL_DELETED")
     os.remove("purge.txt")
 
 
