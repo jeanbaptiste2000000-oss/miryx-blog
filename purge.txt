@@ -1,5 +1,0 @@
-# Suppression des 3 articles du 1er run (défauts corrigés dans la v4.1) + anciens articles de la v1 (Reddit)
-legacy
-fr/tu-me-manques-quand-le-silence-devient-un-cri-dans-le-couple
-en/what-i-don-t-know-never-mind-really-says-when-the-chat-goes-silent
-ar/love_message-8-2026-09-24
