@@ -143,7 +143,7 @@ Contexte : {topic_summary[:500]}
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             json={
-                "model": openai/gpt-oss-120b,
+                "model": "openai/gpt-oss-120b",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
