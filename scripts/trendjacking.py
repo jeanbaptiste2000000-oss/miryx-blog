@@ -461,6 +461,25 @@ def render_body(lang: str, art: dict, ex: dict) -> str:
     )
 
 
+FALLBACK_TIPS = {
+    "fr": [
+        "Réponds d’abord à la question précise, puis ajoute le contexte utile : une phrase claire réduit les malentendus.",
+        "Si le ton te paraît froid, pose une question neutre au lieu de supposer l’intention de l’autre.",
+        "Avant d’envoyer, relis ton texto en retirant les sous-entendus que tu ne voudrais pas expliquer ensuite.",
+    ],
+    "en": [
+        "Answer the specific question first, then add useful context; a clear opening leaves less room for misunderstanding.",
+        "If the tone feels cold, ask one neutral clarifying question instead of guessing the other person's intent.",
+        "Before sending, remove any hint or implication you would not be comfortable explaining directly.",
+    ],
+    "ar": [
+        "أجب أولًا عن السؤال المحدد، ثم أضف السياق الضروري؛ فالوضوح يقلّل احتمال سوء الفهم.",
+        "إذا بدا الرد باردًا، اطرح سؤالًا محايدًا للتوضيح بدل افتراض نية الطرف الآخر.",
+        "قبل الإرسال، راجع رسالتك واحذف التلميحات التي لا تريد شرحها بصراحة لاحقًا.",
+    ],
+}
+
+
 def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | None:
     """Retourne {titre, meta_description, corps_html, exemple_id} ou None. Rejeté = non publié."""
     try:
@@ -475,6 +494,18 @@ def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | No
         if lang == "en":  # guillemets anglais partout (le modèle mélange « » et “ ”)
             art = {k: fix_quotes_en(v) for k, v in art.items()}
             conseils = [fix_quotes_en(c) for c in conseils]
+        # Les modèles renvoient parfois 1–2 conseils malgré le contrat JSON.
+        # Compléter avec un conseil éditorial vérifié plutôt que jeter un article autrement valable.
+        if 1 <= len(conseils) < 3:
+            for fallback_tip in FALLBACK_TIPS[lang]:
+                if len(conseils) >= 3:
+                    break
+                candidate = fix_quotes_en(fallback_tip) if lang == "en" else fallback_tip
+                if all(norm(candidate) not in norm(existing) and norm(existing) not in norm(candidate)
+                       for existing in conseils):
+                    conseils.append(candidate)
+            if len(conseils) == 3:
+                print(f"[INFO] {lang}: conseils incomplets complétés par la bibliothèque éditoriale.")
         art["lecture"] = tidy(lang, art["lecture"])
     except Exception:
         print("[WARN] Réponse incomplète ou exemple_id invalide, article ignoré")
