@@ -480,6 +480,23 @@ FALLBACK_TIPS = {
 }
 
 
+def complete_tips(lang: str, tips: list[str]) -> list[str]:
+    """Fill only a partial list (1–2 tips); never invent an article if the model returned none."""
+    completed = list(tips[:3])
+    if not 1 <= len(completed) < 3:
+        return completed
+    for fallback_tip in FALLBACK_TIPS[lang]:
+        if len(completed) >= 3:
+            break
+        candidate = fix_quotes_en(fallback_tip) if lang == "en" else fallback_tip
+        if all(norm(candidate) not in norm(existing) and norm(existing) not in norm(candidate)
+               for existing in completed):
+            completed.append(candidate)
+    if len(completed) == 3:
+        print(f"[INFO] {lang}: conseils incomplets complétés par la bibliothèque éditoriale.")
+    return completed
+
+
 def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | None:
     """Retourne {titre, meta_description, corps_html, exemple_id} ou None. Rejeté = non publié."""
     try:
@@ -496,16 +513,7 @@ def validate_article(lang: str, data: dict, allowed_ids: list[int]) -> dict | No
             conseils = [fix_quotes_en(c) for c in conseils]
         # Les modèles renvoient parfois 1–2 conseils malgré le contrat JSON.
         # Compléter avec un conseil éditorial vérifié plutôt que jeter un article autrement valable.
-        if 1 <= len(conseils) < 3:
-            for fallback_tip in FALLBACK_TIPS[lang]:
-                if len(conseils) >= 3:
-                    break
-                candidate = fix_quotes_en(fallback_tip) if lang == "en" else fallback_tip
-                if all(norm(candidate) not in norm(existing) and norm(existing) not in norm(candidate)
-                       for existing in conseils):
-                    conseils.append(candidate)
-            if len(conseils) == 3:
-                print(f"[INFO] {lang}: conseils incomplets complétés par la bibliothèque éditoriale.")
+        conseils = complete_tips(lang, conseils)
         art["lecture"] = tidy(lang, art["lecture"])
     except Exception:
         print("[WARN] Réponse incomplète ou exemple_id invalide, article ignoré")
